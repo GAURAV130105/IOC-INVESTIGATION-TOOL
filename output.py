@@ -35,7 +35,7 @@ def init_history_table():
         CREATE TABLE IF NOT EXISTS history (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp   TEXT NOT NULL,
-            indicator   TEXT NOT NULL,
+            indicator   TEXT NOT NULL UNIQUE,
             vt_result   TEXT,
             otx_result  TEXT,
             verdict     TEXT
@@ -51,6 +51,11 @@ def save_results(indicator, vt_result, otx_result, verdict):
     cursor.execute("""
         INSERT INTO history (timestamp, indicator, vt_result, otx_result, verdict)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(indicator) DO UPDATE SET
+            timestamp  = excluded.timestamp,
+            vt_result  = excluded.vt_result,
+            otx_result = excluded.otx_result,
+            verdict    = excluded.verdict
     """, (
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         indicator,
