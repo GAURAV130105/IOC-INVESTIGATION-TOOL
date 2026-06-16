@@ -1,6 +1,10 @@
 # 🛡️ IOC Investigation Tool
 
+<<<<<<< HEAD
 >A threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
+=======
+> A threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
+>>>>>>> 16e76239c9499c78384ac48567ffaaa43d85a1d4
 
 ---
 
