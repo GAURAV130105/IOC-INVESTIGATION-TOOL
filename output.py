@@ -3,6 +3,7 @@ import json
 import datetime
 
 from cache import DB_PATH
+from scoring import VERDICT_DISPLAY
 
 def print_history():
     init_history_table()
@@ -25,7 +26,8 @@ def print_history():
     print(f"  {'─'*45}")
 
     for i, (timestamp, indicator, verdict) in enumerate(rows, 1):
-        print(f"  {i}. {indicator:<20} {verdict:<20} {timestamp}")
+        display = VERDICT_DISPLAY.get(verdict, verdict)
+        print(f"  {i}. {indicator:<20} {display:<20} {timestamp}")
 
     print(f"  {'─'*45}\n")
 
@@ -69,3 +71,34 @@ def save_results(indicator, vt_result, otx_result, verdict):
     conn.close()
 
     print(f"  Result saved to database ({total} total)")
+
+def get_history_count():
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    total = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+    conn.close()
+    return total
+
+def get_history_entry(n):
+    """Return the nth history entry (1-indexed, newest first), or None if out of range."""
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT timestamp, indicator, vt_result, otx_result, verdict
+        FROM history
+        ORDER BY id DESC
+        LIMIT 1 OFFSET ?
+    """, (n - 1,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    timestamp, indicator, vt_json, otx_json, verdict = row
+    return {
+        "timestamp": timestamp,
+        "indicator": indicator,
+        "vt":        json.loads(vt_json)  if vt_json  else None,
+        "otx":       json.loads(otx_json) if otx_json else None,
+        "verdict":   verdict,
+    }

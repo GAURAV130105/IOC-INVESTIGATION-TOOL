@@ -159,5 +159,14 @@
     "Total Defense": ["Total Defense", "TotalDefense"],
     "Fortect": ["Fortect"],
     "K7": ["K7", "K7AntiVirus"]
-  }
+  },
+
+  "apt_actors": [
+    "Lazarus", "APT28", "APT29", "APT30", "APT41",
+    "FIN7", "FIN8", "Sandworm", "Cozy Bear", "Fancy Bear",
+    "Winnti", "Turla", "Kimsuky", "Scattered Spider",
+    "BlackCat", "LockBit"
+  ],
+
+  "default_verdict_mode": "worst_case"
 }

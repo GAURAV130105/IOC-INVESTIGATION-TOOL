@@ -4,27 +4,17 @@ from detect import detect_type
 from vt import vt_check
 from otx import otx_check
 from abuseipdb import abuseipdb_check
-from scoring import combined_verdict
-from output import save_results
-from output import print_history
+from scoring import combined_verdict, load_config, resolve_vendor
+from output import save_results, print_history, get_history_entry, get_history_count
 
-# Unified check
+config = load_config("config.json")
 
-def check_indicator(indicator):
 
-    ind_type = detect_type(indicator)
-
-    if ind_type is None:
-        print("Invalid indicator. Enter a valid IPv4, domain, or hash.")
-        return
+def display_report(indicator, ind_type, vt, otx, abuse):
 
     print(f"\n{'='*45}")
     print(f"  Threat Report: {indicator}")
     print(f"{'='*45}")
-
-    vt    = vt_check(indicator, ind_type)
-    otx   = otx_check(indicator, ind_type)
-    abuse = abuseipdb_check(indicator, ind_type)
 
     # Print VT results
     if vt:
@@ -52,8 +42,24 @@ def check_indicator(indicator):
 
         if len(vt["malicious_vendors"]) > 0:
             print(f"\n  Top Malicious Detections:")
-            for v in vt["malicious_vendors"]:
-                print(f"    {v['vendor']:<20} {v['name']}")
+
+            def _vendor_tier(v):
+                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
+                if canonical in config["tier1"]:
+                    return 1
+                elif canonical in config["tier2"]:
+                    return 2
+                return 3
+
+            for v in sorted(vt["malicious_vendors"], key=_vendor_tier):
+                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
+                if canonical in config["tier1"]:
+                    tier_label = "(Tier 1)"
+                elif canonical in config["tier2"]:
+                    tier_label = "(Tier 2)"
+                else:
+                    tier_label = "(Tier 3)"
+                print(f"    {v['vendor']:<20} {v['name']:<30} {tier_label}")
 
     # Print OTX results
     if otx:
@@ -108,34 +114,83 @@ def check_indicator(indicator):
 
         if abuse['reports']:
             print(f"\n  Recent Reports:")
+            _firewall_words   = {'ttl', 'ufw', 'tos', 'packet', 'port'}
+            _threat_keywords  = {'malware', 'phishing', 'ransomware', 'trojan', 'botnet', 'actor'}
             for r in abuse['reports']:
-                date    = r['reported_at'][:10] if r['reported_at'] else '?'
-                cats    = ', '.join(r['categories']) if r['categories'] else 'None'
-                comment = r['comment'][:80] if r['comment'] else ''
+                date = r['reported_at'][:10] if r['reported_at'] else '?'
+                cats = ', '.join(r['categories']) if r['categories'] else 'None'
                 print(f"    [{date}] {cats}")
+                comment = (r['comment'] or '').strip()
                 if comment:
-                    print(f"             {comment}")
+                    lower = comment.lower()
+                    is_firewall = any(w in lower for w in _firewall_words)
+                    has_domain  = '.' in comment and not comment.replace('.', '').replace(':', '').replace('/', '').replace(' ', '').isdigit()
+                    has_threat  = any(k in lower for k in _threat_keywords)
+                    if not is_firewall and (has_domain or has_threat):
+                        print(f"             {comment[:80]}")
 
-    # Print score breakdown and verdict
-    verdict_result = combined_verdict(vt, otx, abuse)
+    # Score breakdown and verdict
+    verdict_result = combined_verdict(vt, otx, abuse, config=config)
 
     print(f"\n  Score Breakdown:")
     for line in verdict_result["breakdown"]:
         print(f"    {line}")
     print(f"  {'─'*40}")
-    print(f"\n  Verdict  : {verdict_result['verdict']}  (score: {verdict_result['score']})")
+    print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (score: {verdict_result['score']})")
+    print(f"  Recommendation : {verdict_result['recommendation']}")
+    print(f"  Consensus      : {verdict_result['consensus_ratio']}")
+    print(f"  Confidence     : {verdict_result['confidence']}")
+    print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
+    print(f"  Mode           : {verdict_result['mode']}")
+    print()
+    print(f"  Per Source:")
+    for name, s in verdict_result['per_source'].items():
+        print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
     print(f"{'='*45}\n")
 
-    save_results(indicator, vt, otx, verdict_result["verdict"])
+    return verdict_result
+
+
+def check_indicator(indicator):
+
+    ind_type = detect_type(indicator)
+
+    if ind_type is None:
+        print("Invalid indicator. Enter a valid IPv4, domain, or hash.")
+        return
+
+    vt    = vt_check(indicator, ind_type)
+    otx   = otx_check(indicator, ind_type)
+    abuse = abuseipdb_check(indicator, ind_type)
+
+    verdict_result = display_report(indicator, ind_type, vt, otx, abuse)
+    save_results(indicator, vt, otx, verdict_result["final_verdict"])
 
 
 # Main loop
 
 while True:
     indicator = input("Enter IP, domain, or file hash (or 'exit' to quit, 'history' to view past lookups): ").strip()
-    if indicator.lower() == "exit":
+
+    if indicator.lower() in ("exit", "quit", "q"):
         break
-    if indicator.lower() == "history":
-        print_history()
+
+    parts = indicator.split()
+    if parts and parts[0].lower() == "history":
+        if len(parts) == 1:
+            print_history()
+        elif len(parts) == 2 and parts[1].isdigit():
+            n     = int(parts[1])
+            entry = get_history_entry(n)
+            if entry is None:
+                total = get_history_count()
+                print(f"  Entry #{n} not found. History has {total} entries.")
+            else:
+                ind_type = detect_type(entry["indicator"])
+                print(f"  (Cached result from {entry['timestamp']})")
+                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], None)
+        else:
+            print("  Usage: history  or  history <number>")
         continue
+
     check_indicator(indicator)
