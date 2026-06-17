@@ -139,13 +139,19 @@ def display_report(indicator, ind_type, vt, otx, abuse):
     print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (score: {verdict_result['score']})")
     print(f"  Recommendation : {verdict_result['recommendation']}")
     print(f"  Consensus      : {verdict_result['consensus_ratio']}")
-    print(f"  Confidence     : {verdict_result['confidence']}")
+    print(f"  Confidence     : {verdict_result['confidence']} (source)  |  {verdict_result['system_confidence']} (system)")
     print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
     print(f"  Mode           : {verdict_result['mode']}")
+    print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
+    if verdict_result['inactive_sources']:
+        print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
     print()
     print(f"  Per Source:")
     for name, s in verdict_result['per_source'].items():
         print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
+    print(f"  Contribution   :")
+    for name, pct in verdict_result['contribution'].items():
+        print(f"    {name:<12}: {pct}")
     print(f"{'='*45}\n")
 
     return verdict_result

@@ -245,19 +245,18 @@ def score_vt(vt, config):
     }
 
 
-def score_otx(otx, vt_score=0, config=None):
+def score_otx(otx, config=None):
     """Score AlienVault OTX data. Returns per-source result dict.
 
-    Most OTX signals are gated behind vt_score >= 1: pulses, recency, tags, and passive DNS
-    are only counted when VT has already flagged something. OTX alone has too many false
-    positives because pulses are community-submitted with no vetting process.
-
-    Exceptions (fire without the VT gate):
-      - Adversary attribution: named APT/adversary fields are high-signal regardless of VT
-      - Malware families: a named family in a pulse is strong enough to stand alone
+    Scoring layers (additive, capped at 15):
+      1. Pulse count      — how widely tracked the IP is across OTX feeds
+      2. Reputation       — OTX community reputation score (negative = flagged)
+      3. Recent pulses    — pulses mentioning 2025/2026 indicate current activity
+      4. Pulse tags       — weighted tags on individual pulses (noise tags excluded)
+      5. Adversary        — named APT/adversary attribution is high-signal
+      6. Malware families — named family in a pulse stands on its own
+      7. Passive DNS      — recent passive DNS activity corroborates the threat
     """
-    # OTX pulses and passive DNS are only counted when VT already flagged something;
-    # OTX alone has too many false positives (pulses get added by anyone in the community)
 
     if not otx:
         return {"verdict": "no_data", "confidence": None, "score": 0,
@@ -268,17 +267,14 @@ def score_otx(otx, vt_score=0, config=None):
 
     pulse_count = otx.get("pulse_count", 0)
 
-    if vt_score >= 1:
-        if pulse_count >= 10:
-            score += 2
-            breakdown.append(f"OTX pulses {pulse_count:<8} → +2  (widely tracked)")
-        elif pulse_count >= 1:
-            score += 1
-            breakdown.append(f"OTX pulses {pulse_count:<8} → +1")
-        else:
-            breakdown.append(f"OTX pulses {pulse_count:<8} → +0")
+    if pulse_count >= 10:
+        score += 2
+        breakdown.append(f"OTX pulses {pulse_count:<8} → +2  (widely tracked)")
+    elif pulse_count >= 1:
+        score += 1
+        breakdown.append(f"OTX pulses {pulse_count:<8} → +1")
     else:
-        breakdown.append(f"OTX pulses {pulse_count:<8} → +0  (skipped — no VT detections)")
+        breakdown.append(f"OTX pulses {pulse_count:<8} → +0")
 
     reputation = otx.get("reputation", 0)
 
@@ -308,15 +304,15 @@ def score_otx(otx, vt_score=0, config=None):
         if "2026" in p.get("name", "") or "2025" in p.get("name", ""):
             recent_pulse_found = True
 
-        # Pulse tag scoring (gated — pulse tags are as noisy as pulses themselves)
-        if vt_score >= 1 and config:
+        # Pulse tag scoring
+        if config:
             for tag in p_tags - NOISE_TAGS:
                 w = config["tag_weights"].get(tag, 0)
                 if w > 0:
                     pulse_tag_score += w
                     pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
 
-        # Adversary attribution is high-signal regardless of VT
+        # Adversary attribution
         adversary = p.get("adversary", "")
         if adversary:
             apt_actors = config.get("apt_actors", set()) if config else set()
@@ -326,30 +322,24 @@ def score_otx(otx, vt_score=0, config=None):
             else:
                 adversary_score = min(adversary_score + 2, 4)
 
-        # Malware family is high-signal — fires without the VT gate
+        # Malware family
         if p.get("families", []):
             family_score = min(family_score + 2, 4)
 
-    if vt_score >= 1:
-        if recent_pulse_found:
-            score += 1
-            breakdown.append(f"Recent pulse (2025/2026)     → +1")
-        else:
-            breakdown.append(f"Recent pulse (2025/2026)     → +0")
+    if recent_pulse_found:
+        score += 1
+        breakdown.append(f"Recent pulse (2025/2026)     → +1")
     else:
-        breakdown.append(f"Recent pulse                 → +0  (skipped — no VT detections)")
+        breakdown.append(f"Recent pulse (2025/2026)     → +0")
 
-    if vt_score >= 1:
-        pulse_tag_score = min(pulse_tag_score, 5)
-        if pulse_tag_contrib:
-            score += pulse_tag_score
-            for tag, w in sorted(pulse_tag_contrib.items(), key=lambda x: -x[1]):
-                breakdown.append(f"  Pulse tag [{tag}] → +{w}")
-            breakdown.append(f"Pulse tags (capped)          → +{pulse_tag_score}  (cap 5)")
-        else:
-            breakdown.append(f"Pulse tags                   → +0")
+    pulse_tag_score = min(pulse_tag_score, 5)
+    if pulse_tag_contrib:
+        score += pulse_tag_score
+        for tag, w in sorted(pulse_tag_contrib.items(), key=lambda x: -x[1]):
+            breakdown.append(f"  Pulse tag [{tag}] → +{w}")
+        breakdown.append(f"Pulse tags (capped)          → +{pulse_tag_score}  (cap 5)")
     else:
-        breakdown.append(f"Pulse tags                   → +0  (skipped — no VT detections)")
+        breakdown.append(f"Pulse tags                   → +0")
 
     if adversary_score > 0:
         score += adversary_score
@@ -378,18 +368,15 @@ def score_otx(otx, vt_score=0, config=None):
         except ValueError:
             pass
 
-    if vt_score >= 1:
-        if latest_pdns:
-            days_since = (datetime.datetime.now() - latest_pdns).days
-            if days_since <= 30:
-                score += 1
-                breakdown.append(f"Passive DNS last seen {days_since} days ago → +1")
-            else:
-                breakdown.append(f"Passive DNS last seen {days_since} days ago → +0")
+    if latest_pdns:
+        days_since = (datetime.datetime.now() - latest_pdns).days
+        if days_since <= 30:
+            score += 1
+            breakdown.append(f"Passive DNS last seen {days_since} days ago → +1")
         else:
-            breakdown.append(f"Passive DNS last seen unknown  → +0")
+            breakdown.append(f"Passive DNS last seen {days_since} days ago → +0")
     else:
-        breakdown.append(f"Passive DNS                  → +0  (skipped — no VT detections)")
+        breakdown.append(f"Passive DNS last seen unknown  → +0")
 
     score = min(score, 15)
 
@@ -528,7 +515,7 @@ def combined_verdict(vt, otx, abuse=None, mode=None, config=None):
         mode = config.get("default_mode", "worst_case")
 
     vt_result    = score_vt(vt, config)
-    otx_result   = score_otx(otx, vt_score=vt_result["score"], config=config)
+    otx_result   = score_otx(otx, config=config)
     abuse_result = score_abuse(abuse)
 
     sources = {
@@ -602,23 +589,26 @@ def combined_verdict(vt, otx, abuse=None, mode=None, config=None):
 
     triggered_by        = [name for name, r in active.items() if r["verdict"] == final_verdict]
     corroboration_count = len(triggered_by)
+    active_count        = len(active)
 
-    # More sources agreeing → higher confidence, regardless of individual source confidence
-    if corroboration_count >= 3:
-        confidence = "high"
-    elif corroboration_count >= 2:
-        confidence = "medium"
+    # Source confidence: strongest confidence among individual sources
+    single_source_confidences = [r["confidence"] for r in active.values() if r["confidence"]]
+    if single_source_confidences:
+        source_confidence = max(single_source_confidences, key=lambda c: CONFIDENCE_ORDER[c])
     else:
-        # Single source: fall back to that source's own confidence level
-        source_confidences = [r["confidence"] for r in active.values() if r["confidence"]]
-        if source_confidences:
-            confidence = max(source_confidences, key=lambda c: CONFIDENCE_ORDER[c])
-        else:
-            confidence = "low"
+        source_confidence = "low"
 
-    active_count = len(active)
+    # System confidence: derived from cross-source corroboration count
+    if active_count >= 3 and corroboration_count >= 3:
+        system_confidence = "high"
+    elif active_count >= 2 and corroboration_count >= 2:
+        system_confidence = "medium"
+    else:
+        system_confidence = "low"
     ratio_str    = f"{corroboration_count}/{active_count}"
-    if corroboration_count == active_count:
+    if active_count == 1:
+        consensus_ratio = f"Single-source ({ratio_str})"
+    elif corroboration_count == active_count:
         consensus_ratio = f"Strong ({ratio_str})"
     elif corroboration_count >= 2:
         consensus_ratio = f"Moderate ({ratio_str})"
@@ -631,18 +621,30 @@ def combined_verdict(vt, otx, abuse=None, mode=None, config=None):
             full_breakdown.append(f"── {name} ──")
             full_breakdown.extend(r["breakdown"])
 
-    total_score = sum(r["score"] for r in active.values())
+    total_score  = sum(r["score"] for r in active.values())
+    contribution = {}
+    for name, r in sources.items():
+        if total_score > 0 and r["has_data"]:
+            contribution[name] = f"{round(r['score'] / total_score * 100)}%"
+        elif r["has_data"]:
+            contribution[name] = "0%"
+        else:
+            contribution[name] = "no data"
 
     return {
         "final_verdict":         final_verdict,
         "final_verdict_display": VERDICT_DISPLAY.get(final_verdict, final_verdict),
-        "confidence":            confidence,
+        "confidence":            source_confidence,
+        "system_confidence":     system_confidence,
         "triggered_by":          triggered_by,
         "mode":                  mode,
         "score":                 total_score,
         "corroboration_count":   corroboration_count,
         "consensus_ratio":       consensus_ratio,
         "recommendation":        RECOMMENDATIONS.get(final_verdict, "Review"),
+        "active_sources":        list(active.keys()),
+        "inactive_sources":      [name for name, r in sources.items() if not r["has_data"]],
+        "contribution":          contribution,
         "per_source": {
             name: {
                 "verdict":         r["verdict"],
