@@ -83,6 +83,8 @@
     "critical": {
       "_comment": "Active attack infrastructure — near-certain malicious",
       "c2": 4,
+      "c2 server":4,
+      "c2 response":4,
       "ransomware": 4,
       "apt": 4,
       "malware-distribution": 4,
@@ -112,7 +114,10 @@
       "cl0p": 3,
       "medusa": 3,
       "black basta": 3,
-      "darkside": 3
+      "darkside": 3,
+      "dorkbot": 3,
+      "bashlite": 3,
+      "malicious-ip": 3
     },
 
     "medium": {
@@ -121,11 +126,21 @@
       "tor-exit-node": 2,
       "self-signed": 2,
       "brute-force": 2,
+      "bruteforce": 2,
       "ssh-brute-force": 2,
       "rdp-brute-force": 2,
       "credential-stuffing": 2,
       "port-scan": 1,
       "vulnerability-scan": 2,
+      "scanning": 2,
+      "webscanner": 2,
+      "web app attack": 2,
+      "probing": 2,
+      "blocklist": 2,
+      "threat-intel": 2,
+      "phishing site": 2,
+      "malicious site": 2,
+      "typosquatting": 2,
       "proxy": 1,
       "vpn": 0,
       "anonymizer": 2,
@@ -141,7 +156,19 @@
       "potentially-unwanted": 1,
       "adware": 1,
       "tracking": 1,
-      "parked-domain": 1
+      "parked-domain": 1,
+      "exploit": 1,
+      "miner": 1,
+      "mail spammer": 1,
+      "nids_malware_alert": 1,
+      "persistence_autorun": 1,
+      "injection_runpe": 1,
+      "injection_createremotethread": 1,
+      "allocates_rwx": 1,
+      "calls-wmi": 1,
+      "suspicious_process": 1,
+      "webscan": 1,
+      "inbound scan": 1
     }
   },
 
@@ -250,13 +277,15 @@
     "eternalblue":       {"weight": 4, "reason": "MS17-010 exploit detected"}
 },
 
-"trusted_asns": {
+"cdn_asns": {
     "AS13335": "Cloudflare",
-    "AS15169": "Google",
-    "AS16509": "Amazon",
-    "AS8075":  "Microsoft",
     "AS54113": "Fastly",
     "AS20940": "Akamai"
+},
+"cloud_hosting_asns": {
+    "AS16509": "Amazon AWS",
+    "AS8075":  "Microsoft Azure",
+    "AS15169": "Google Cloud"
 },
 
 "source_reliability": {
@@ -264,5 +293,18 @@
     "OTX":         0.8,
     "AbuseIPDB":   0.6,
     "Shodan":      0.7
+},
+
+"abuseipdb_attack_weights": {
+    "high": {
+        "weight": 2,
+        "cap": 4,
+        "categories": ["Phishing", "Hacking", "Exploited Host", "SQL Injection", "XSS", "DNS Poisoning"]
+    },
+    "medium": {
+        "weight": 1,
+        "cap": 2,
+        "categories": ["Brute-Force", "DDoS Attack", "Web App Attack", "Bad Web Bot", "Web Spam", "Email Spam", "Spoofing"]
+    }
 }
 }

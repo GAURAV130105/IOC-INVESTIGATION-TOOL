@@ -1,11 +1,12 @@
 import datetime
 
 from detect import detect_type
-from vt import vt_check
-from otx import otx_check
-from shodan import shodan_check
-from abuseipdb import abuseipdb_check
-from scoring import combined_verdict, load_config, resolve_vendor
+from sources.vt import vt_check
+from sources.otx import otx_check
+from sources.shodan import shodan_check
+from sources.abuseipdb import abuseipdb_check
+from sources.whois import whois_check
+from sources.scoring import combined_verdict, load_config, resolve_vendor
 from cache import clear_cache, clear_indicator_cache
 from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator
 
@@ -14,9 +15,9 @@ config = load_config("config.json")
 VERBOSE = False
 
 
-def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
+def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None):
 
-    verdict_result = combined_verdict(vt, otx, abuse, shodan, config=config)
+    verdict_result = combined_verdict(vt, otx, abuse, shodan, whois=whois, config=config)
 
     if not VERBOSE:
         print(f"\n{'='*45}")
@@ -78,8 +79,10 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
         if shodan:
             org = shodan.get('org') or 'Unknown'
             asn = (shodan.get('asn') or '').strip().upper()
-            if asn in config.get('trusted_asns', {}):
-                print(f"  [Shodan]        {org} (CDN/cloud — limited scoring)")
+            if asn in config.get('cdn_asns', {}):
+                print(f"  [Shodan]        {org} (CDN — port/hostname/product scoring skipped)")
+            elif asn in config.get('cloud_hosting_asns', {}):
+                print(f"  [Shodan]        {org} (cloud hosting — port/hostname scoring skipped)")
             else:
                 ports     = shodan.get('ports', [])
                 ports_str = ', '.join(str(p) for p in ports) if ports else "no suspicious findings"
@@ -87,11 +90,24 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
         else:
             print(f"  [Shodan]        no data")
 
+        # WHOIS summary line
+        if whois:
+            age_days  = whois.get('domain_age_days')
+            age_str   = f"{age_days} days old" if age_days is not None else "unknown age"
+            registrar = (whois.get('registrar') or 'unknown registrar')[:35]
+            print(f"  [WHOIS]         {whois.get('domain', indicator)} — {age_str}, {registrar}")
+        else:
+            print(f"  [WHOIS]         no data")
+
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}")
         print(f"  Confidence     : {verdict_result['blended_confidence']}")
         print(f"  Recommendation : {verdict_result['recommendation']}")
         print(f"  Triggered by   : {', '.join(verdict_result['triggered_by'])}")
+        _whois_ctx = verdict_result.get('whois_context', {})
+        if _whois_ctx.get('has_data'):
+            print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
+        print(f"  Mode           : {verdict_result['mode']}")
         print(f"{'='*45}\n")
 
     else:
@@ -242,6 +258,21 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
                     label   = f"{product} {version}".strip()
                     print(f"    Port {svc['port']:<6} {svc['transport']:<4} {label}")
 
+        if whois:
+            print(f"\n  [WHOIS]")
+            print(f"  Domain         : {whois.get('domain') or 'N/A'}")
+            print(f"  Registrar      : {whois.get('registrar') or 'N/A'}")
+            creation = whois.get('creation_date')
+            print(f"  Creation date  : {creation[:10] if creation else 'N/A'}")
+            age_days = whois.get('domain_age_days')
+            print(f"  Domain age     : {age_days} days" if age_days is not None else "  Domain age     : unknown")
+            expiry = whois.get('expiration_date')
+            print(f"  Expiration     : {expiry[:10] if expiry else 'N/A'}")
+            print(f"  Privacy masked : {'Yes' if whois.get('privacy_masked') else 'No'}")
+            print(f"  Country        : {whois.get('country') or 'N/A'}")
+            ns = whois.get('name_servers', [])
+            print(f"  Name servers   : {', '.join(ns[:3]) if ns else 'N/A'}")
+
         print(f"\n  Per Source:")
         for name, s in verdict_result['per_source'].items():
             print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
@@ -260,7 +291,11 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
         print(f"  Confidence     : {verdict_result['blended_confidence']}")
         print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
+        _whois_ctx = verdict_result.get('whois_context', {})
+        if _whois_ctx.get('has_data'):
+            print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
         print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
+        print(f"  Mode           : {verdict_result['mode']}")
         if verdict_result['inactive_sources']:
             print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
         print(f"{'='*45}\n")
@@ -276,13 +311,14 @@ def check_indicator(indicator):
         print("Invalid indicator. Enter a valid IPv4, domain, or hash.")
         return
 
-    vt    = vt_check(indicator, ind_type)
-    otx   = otx_check(indicator, ind_type)
-    abuse = abuseipdb_check(indicator, ind_type)
+    vt     = vt_check(indicator, ind_type)
+    otx    = otx_check(indicator, ind_type)
+    abuse  = abuseipdb_check(indicator, ind_type)
     shodan = shodan_check(indicator, ind_type)
+    whois  = whois_check(indicator, ind_type)
 
-    verdict_result = display_report(indicator, ind_type, vt, otx, abuse,shodan)
-    save_results(indicator, vt, otx,abuse, shodan, verdict_result["final_verdict"])
+    verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois)
+    save_results(indicator, vt, otx, abuse, shodan, verdict_result["final_verdict"], whois)
 
 
 # Main loop
@@ -312,9 +348,9 @@ while True:
   brief                Show summary only
 
   mode                 Show current verdict mode
-  mode weighted        Balanced (default)
+  mode weighted        Balanced 
   mode worst_case      Most conservative
-  mode average         Smoothest output
+  mode average         Smoothest output (default)
 
   reset cache          Clear cached API results
   rescan <indicator>   Delete one IOC from history and cache, then rescan it
@@ -353,7 +389,7 @@ while True:
             else:
                 ind_type = detect_type(entry["indicator"])
                 print(f"  (Cached result from {entry['timestamp']})")
-                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"], entry["shodan"])
+                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"], entry["shodan"], entry.get("whois"))
         else:
             print("  Usage: history  or  history <number>  or  history clear")
         continue

@@ -1,6 +1,6 @@
 # IOC Investigation Tool
 
-A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, and Shodan, then issues a scored verdict.
+A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, Shodan, and WHOIS, then issues a scored verdict.
 
 ---
 
@@ -17,6 +17,7 @@ VT_API_KEY=your_key
 OTX_API_KEY=your_key
 ABUSEIPDB_API_KEY=your_key
 SHODAN_API_KEY=your_key
+WHOIS_API_KEY=your_key
 ```
 
 Run:
@@ -31,8 +32,8 @@ python main.py
 
 | Input | Action |
 |-------|--------|
-| IPv4 address | Check against all four sources |
-| Domain name | Check against VT and OTX |
+| IPv4 address | Check against VT, OTX, AbuseIPDB, and Shodan |
+| Domain name | Check against VT, OTX, and WHOIS |
 | MD5 / SHA1 / SHA256 hash | Check against VT and OTX |
 | `verbose` | Switch to full breakdown view |
 | `brief` | Switch to summary view (default) |
@@ -45,7 +46,7 @@ python main.py
 | `help` | Show command reference |
 | `exit` / `quit` / `q` | Exit |
 
-Results are saved to `ioc_cache.db` (SQLite). All four sources are cached for 7 days (TTL is hardcoded in `cache.py`).
+Results are saved to `ioc_cache.db` (SQLite). All sources are cached for 7 days (TTL is hardcoded in `cache.py`).
 
 ---
 
@@ -97,10 +98,14 @@ Confidence is quality-driven: adversary/family attribution → high; tag matches
 
 | Signal | Points |
 |--------|--------|
-| Abuse confidence score | informational only (not scored) |
-| Distinct reporters (5+, 20+, 50+) | +1 / +2 / +3 |
+| Abuse confidence score (40–79% / 80%+) | +1 / +2 |
+| Distinct reporters (5+, 20+, 50+, 100+, 500+) | +1 / +2 / +3 / +4 / +5 |
 | Last reported ≤7 / ≤30 days | +2 / +1 |
 | Tor exit node | +1 |
+| High-severity attack types (e.g. Phishing, Hacking, SQL Injection) | +2 each (cap +4) |
+| Medium-severity attack types (e.g. Brute-Force, SSH) | +1 each (cap +2) |
+
+For IPs on CDN ASNs, the attack type bonus is additionally capped at +3.
 
 ### Shodan (IPs only)
 
@@ -115,6 +120,20 @@ Confidence is quality-driven: adversary/family attribution → high; tag matches
 **Minimum evidence threshold:** open ports and a missing hostname alone never push the verdict above Clean. A non-clean verdict requires at least one CVE, suspicious product, or high-weight tag (weight ≥ 3).
 
 **Trusted ASNs** (Cloudflare AS13335, Google AS15169, Amazon AS16509, Microsoft AS8075, Fastly AS54113, Akamai AS20940): port scoring and the hostname penalty are skipped. Only CVEs, confirmed malicious products, and tags with weight ≥ 3 are scored. The final combined verdict is globally capped at Medium risk.
+
+### WHOIS (domains only)
+
+WHOIS is a supporting signal — it strengthens existing suspicion but cannot create it from nothing. The final score modifier is capped at +1 when the base score is weak (< 4) and +2 when real threat signal already exists (≥ 4). The WHOIS source verdict is capped at Medium risk.
+
+| Signal | Points |
+|--------|--------|
+| Domain age < 7 days | +4 |
+| Domain age 7–29 days | +3 |
+| Domain age 30–89 days | +2 |
+| Domain age 90–364 days | +1 |
+| Domain age 365+ days | +0 |
+| Privacy / proxy masking on registrant | +1 |
+| No registrar found | +1 |
 
 ---
 
@@ -172,11 +191,12 @@ The displayed **Confidence** value is blended: it reconciles per-source detectio
 |------|----------------|
 | [main.py](main.py) | Input loop, history/mode commands, brief and verbose report display |
 | [detect.py](detect.py) | Detects whether input is an IP, domain, or hash |
-| [vt.py](vt.py) | VirusTotal lookups + rescan requests |
-| [otx.py](otx.py) | AlienVault OTX lookups + passive DNS |
-| [abuseipdb.py](abuseipdb.py) | AbuseIPDB lookups |
-| [shodan.py](shodan.py) | Shodan lookups — open ports, CVEs, banners, tags |
-| [scoring.py](scoring.py) | Per-source scoring, combined verdict logic |
+| [sources/vt.py](sources/vt.py) | VirusTotal lookups + rescan requests |
+| [sources/otx.py](sources/otx.py) | AlienVault OTX lookups + passive DNS |
+| [sources/abuseipdb.py](sources/abuseipdb.py) | AbuseIPDB lookups |
+| [sources/shodan.py](sources/shodan.py) | Shodan lookups — open ports, CVEs, banners, tags |
+| [sources/whois.py](sources/whois.py) | WHOIS lookups — domain age, registrar, privacy masking |
+| [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic |
 | [output.py](output.py) | History (save, list, retrieve, clear) |
 | [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), 7-day TTL |
 | [config.json](config.json) | Vendor tiers, tag weights, suspicious ports/products, trusted ASNs, APT actors, source reliability, verdict mode |

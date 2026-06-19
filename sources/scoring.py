@@ -35,7 +35,8 @@ def load_config(path="config.json"):
     suspicious_ports    = config.get("suspicious_ports", {})
     suspicious_products = config.get("suspicious_products", {})
     shodan_tags         = config.get("shodan_tags", {})
-    trusted_asns        = config.get("trusted_asns", {})
+    cdn_asns            = config.get("cdn_asns", {})
+    cloud_hosting_asns  = config.get("cloud_hosting_asns", {})
     vt_file_tags        = config.get("vt_file_tags", {})
 
     return {
@@ -50,9 +51,11 @@ def load_config(path="config.json"):
         "suspicious_ports":    suspicious_ports,
         "suspicious_products": suspicious_products,
         "shodan_tags":         shodan_tags,
-        "trusted_asns":        trusted_asns,
-        "source_reliability":  config.get("source_reliability", {}),
-        "vt_file_tags":        vt_file_tags,
+        "cdn_asns":            cdn_asns,
+        "cloud_hosting_asns":  cloud_hosting_asns,
+        "source_reliability":       config.get("source_reliability", {}),
+        "vt_file_tags":             vt_file_tags,
+        "abuseipdb_attack_weights": config.get("abuseipdb_attack_weights", {}),
     }
 
 
@@ -353,9 +356,13 @@ def score_otx(otx, config=None):
         if p.get("families", []):
             family_score = min(family_score + 2, 4)
 
-    # Gate pulse count score on quality: if we have details and all are noise, score 0.
-    # When no pulse_details are available fall back to the raw count (can't judge quality).
-    qualifying_count = non_noise_count if pulse_details else pulse_count
+    # Gate pulse count score on quality: only zero out if the entire sample is noise.
+    # pulse_details is a 5-pulse sample, so use full pulse_count when any sample pulse
+    # is non-noise; fall back to raw count when no details are available.
+    if pulse_details:
+        qualifying_count = pulse_count if non_noise_count > 0 else 0
+    else:
+        qualifying_count = pulse_count
     if qualifying_count >= 20:
         score += 1
         breakdown.append(f"OTX pulses {pulse_count:<8} → +1  (widely tracked, {qualifying_count} quality)")
@@ -445,13 +452,14 @@ def score_otx(otx, config=None):
     }
 
 
-def score_abuse(abuse):
+def score_abuse(abuse, config=None, asn=None):
     """Score AbuseIPDB data. Returns per-source result dict.
 
     Scoring layers (additive, capped at 15):
       1. Distinct reporters — independent sources corroborate the abuse
       2. Recency            — recent reports are more actionable
       3. Tor exit node      — anonymization proxy adds baseline risk
+      4. Attack types       — high-severity categories (phishing, hacking) score more than noisy ones (port scan)
 
     AbuseIPDB's confidence score is shown informally but not used for
     scoring — it is often stale or miscalibrated for shared infrastructure.
@@ -471,9 +479,22 @@ def score_abuse(abuse):
     # Show the AbuseIPDB confidence score informally but do not use
     # it for scoring — it is often stale or miscalibrated for shared
     # infrastructure. Score from raw report data instead.
-    breakdown.append(f"AbuseIPDB confidence {abuse_score}%       → informational only")
+    if abuse_score >= 80:
+        score += 2
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +2  (high confidence)")
+    elif abuse_score >= 40:
+        score += 1
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +1  (moderate confidence)")
+    else:
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +0  (low — not scored)")
 
-    if distinct_users >= 50:
+    if distinct_users >= 500:
+        score += 5
+        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +5  (extraordinary — mass reporting)")
+    elif distinct_users >= 100:
+        score += 4
+        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +4  (overwhelming corroboration)")
+    elif distinct_users >= 50:
         score += 3
         breakdown.append(f"Distinct reporters {distinct_users:<3}    → +3  (widely reported)")
     elif distinct_users >= 20:
@@ -512,6 +533,43 @@ def score_abuse(abuse):
         breakdown.append(f"Tor exit node               → +1")
     else:
         breakdown.append(f"Tor exit node               → +0")
+
+    attack_weights = (config or {}).get("abuseipdb_attack_weights", {})
+    if attack_weights and abuse.get("top_categories"):
+        high_cfg   = attack_weights.get("high", {})
+        medium_cfg = attack_weights.get("medium", {})
+        ignore_cfg = attack_weights.get("ignore", {})
+
+        high_cats   = set(high_cfg.get("categories", []))
+        medium_cats = set(medium_cfg.get("categories", []))
+        ignore_cats = set(ignore_cfg.get("categories", []))
+
+        high_score   = 0
+        medium_score = 0
+        matched_cats = []
+
+        for cat_name, _ in abuse.get("top_categories", []):
+            if cat_name in ignore_cats:
+                continue
+            elif cat_name in high_cats:
+                high_score += high_cfg.get("weight", 2)
+                matched_cats.append(cat_name)
+            elif cat_name in medium_cats:
+                medium_score += medium_cfg.get("weight", 1)
+                matched_cats.append(cat_name)
+
+        high_score   = min(high_score,   high_cfg.get("cap", 4))
+        medium_score = min(medium_score, medium_cfg.get("cap", 2))
+        attack_bonus = high_score + medium_score
+        cdn_asns_cfg = (config or {}).get("cdn_asns", {})
+        if asn and asn in cdn_asns_cfg:
+            attack_bonus = min(attack_bonus, 3)
+
+        if matched_cats:
+            score += attack_bonus
+            breakdown.append(f"Attack types [{', '.join(matched_cats)}] → +{attack_bonus}")
+        else:
+            breakdown.append(f"Attack types                → +0")
 
     has_data = distinct_users > 0 or is_tor
 
@@ -562,13 +620,17 @@ def score_shodan(shodan, config=None):
     suspicious_ports    = config.get("suspicious_ports", {})    if config else {}
     suspicious_products = config.get("suspicious_products", {}) if config else {}
     shodan_tag_weights  = config.get("shodan_tags", {})         if config else {}
-    trusted_asns        = config.get("trusted_asns", {})        if config else {}
+    cdn_asns            = config.get("cdn_asns", {})            if config else {}
+    cloud_hosting_asns  = config.get("cloud_hosting_asns", {})  if config else {}
 
     asn = (shodan.get("asn") or "").strip().upper()
-    is_trusted_asn = asn in trusted_asns
+    is_cdn_asn   = asn in cdn_asns
+    is_cloud_asn = asn in cloud_hosting_asns
 
-    if is_trusted_asn:
-        breakdown.append(f"Trusted ASN {asn} ({trusted_asns[asn]}) → port/hostname scoring skipped")
+    if is_cdn_asn:
+        breakdown.append(f"CDN ASN {asn} ({cdn_asns[asn]}) → port/hostname/product scoring skipped, verdict capped")
+    elif is_cloud_asn:
+        breakdown.append(f"Cloud hosting ASN {asn} ({cloud_hosting_asns[asn]}) → port/hostname scoring skipped")
 
     vulns      = shodan.get("vulns", [])
     vuln_count = len(vulns)
@@ -591,7 +653,7 @@ def score_shodan(shodan, config=None):
     port_score    = 0
     flagged_ports = []
 
-    if not is_trusted_asn:
+    if not (is_cdn_asn or is_cloud_asn):
         for port in shodan.get("ports", []):
             port_str = str(port)
             if port_str in suspicious_ports:
@@ -610,29 +672,32 @@ def score_shodan(shodan, config=None):
         else:
             breakdown.append(f"Suspicious ports none → +0")
     else:
-        breakdown.append(f"Suspicious ports (skipped — trusted ASN) → +0")
+        breakdown.append(f"Suspicious ports (skipped — CDN/cloud ASN) → +0")
 
     product_score    = 0
     flagged_products = []
 
-    for service in shodan.get("services", []):
-        product = service.get("product", "").lower()
-        if not product:
-            continue
-        for known_product, details in suspicious_products.items():
-            if known_product in product:
-                product_score += details["weight"]
-                flagged_products.append(f"{service['product']} on port {service['port']} ({details['reason']})")
+    if not is_cdn_asn:
+        for service in shodan.get("services", []):
+            product = service.get("product", "").lower()
+            if not product:
+                continue
+            for known_product, details in suspicious_products.items():
+                if known_product in product:
+                    product_score += details["weight"]
+                    flagged_products.append(f"{service['product']} on port {service['port']} ({details['reason']})")
 
-    product_score = min(product_score, 6)
-    score += product_score
+        product_score = min(product_score, 6)
+        score += product_score
 
-    if flagged_products:
-        breakdown.append(f"Suspicious products {len(flagged_products):<3} → +{product_score}  (cap 6)")
-        for p in flagged_products:
-            breakdown.append(f"  {p}")
+        if flagged_products:
+            breakdown.append(f"Suspicious products {len(flagged_products):<3} → +{product_score}  (cap 6)")
+            for p in flagged_products:
+                breakdown.append(f"  {p}")
+        else:
+            breakdown.append(f"Suspicious products none  → +0")
     else:
-        breakdown.append(f"Suspicious products none  → +0")
+        breakdown.append(f"Suspicious products (skipped — CDN ASN) → +0")
 
     tag_score           = 0
     flagged_tags        = []
@@ -645,7 +710,7 @@ def score_shodan(shodan, config=None):
             reason = shodan_tag_weights[tag_lower]["reason"]
             if weight >= 3:
                 has_high_weight_tag = True
-            if is_trusted_asn and weight < 3:
+            if is_cdn_asn and weight < 3:
                 continue
             tag_score += weight
             flagged_tags.append(f"{tag} ({reason})")
@@ -660,7 +725,7 @@ def score_shodan(shodan, config=None):
     else:
         breakdown.append(f"Shodan tags      none → +0")
 
-    if not is_trusted_asn:
+    if not (is_cdn_asn or is_cloud_asn):
         hostnames = shodan.get("hostnames", [])
         if not hostnames:
             score += 1
@@ -668,7 +733,7 @@ def score_shodan(shodan, config=None):
         else:
             breakdown.append(f"Hostname: {hostnames[0]:<20} → +0")
     else:
-        breakdown.append(f"Hostname check (skipped — trusted ASN) → +0")
+        breakdown.append(f"Hostname check (skipped — CDN/cloud ASN) → +0")
 
     has_data = (
         len(vulns) > 0 or
@@ -706,10 +771,84 @@ def score_shodan(shodan, config=None):
         "evidence_count": len(vulns) + len(flagged_ports) + len(flagged_products),
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "gated":          is_cdn_asn or is_cloud_asn,
     }
     
     
-def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, config=None):
+def score_whois(whois, config=None):
+    if not whois:
+        return {"verdict": "no_data", "confidence": None, "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score        = 0
+    breakdown    = []
+    age_days     = whois.get("domain_age_days")
+    privacy      = whois.get("privacy_masked", False)
+    registrar    = whois.get("registrar")
+    creation     = whois.get("creation_date")
+
+    # Domain age scoring
+    if age_days is not None:
+        if age_days < 7:
+            score += 4
+            breakdown.append(f"Domain age {age_days} days        → +4  (very newly registered)")
+        elif age_days < 30:
+            score += 3
+            breakdown.append(f"Domain age {age_days} days        → +3  (newly registered)")
+        elif age_days < 90:
+            score += 2
+            breakdown.append(f"Domain age {age_days} days        → +2  (recently registered)")
+        elif age_days < 365:
+            score += 1
+            breakdown.append(f"Domain age {age_days} days        → +1  (registered < 1 year)")
+        else:
+            breakdown.append(f"Domain age {age_days} days        → +0  (established domain)")
+    else:
+        breakdown.append(f"Domain age unknown           → +0")
+
+    # Privacy masking
+    if privacy:
+        score += 1
+        breakdown.append(f"Privacy masking              → +1")
+    else:
+        breakdown.append(f"Privacy masking              → +0")
+
+    # Missing registrar
+    if not registrar:
+        score += 1
+        breakdown.append(f"No registrar found           → +1")
+    else:
+        breakdown.append(f"Registrar: {registrar[:30]:<30} → +0")
+
+    # Cap at 7 — WHOIS is a supporting signal not primary evidence
+    score = min(score, 7)
+
+    # Confidence reflects data quality not suspiciousness
+    if creation is None:
+        confidence = "low"
+    elif age_days is not None and age_days < 30:
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    has_data = creation is not None or registrar is not None
+
+    # Cap verdict at medium_risk — WHOIS alone should never produce High risk
+    verdict = score_to_verdict(score) if has_data else "no_data"
+    if verdict == "high":
+        verdict = "medium_risk"
+
+    return {
+        "verdict":        verdict,
+        "confidence":     confidence,
+        "score":          score,
+        "evidence_count": 1 if has_data else 0,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mode=None, config=None):
     """Combine per-source scores into a single final verdict.
 
     Three aggregation modes (set via config or overridden per-call):
@@ -731,8 +870,10 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
 
     vt_result    = score_vt(vt, config)
     otx_result   = score_otx(otx, config=config)
-    abuse_result = score_abuse(abuse)
+    _abuse_asn = (shodan.get("asn") or "").strip().upper() if isinstance(shodan, dict) else None
+    abuse_result  = score_abuse(abuse, config=config, asn=_abuse_asn or None)
     shodan_result = score_shodan(shodan, config=config)
+    whois_result  = score_whois(whois, config)
     sources = {
         "VirusTotal": vt_result,
         "OTX":        otx_result,
@@ -771,6 +912,13 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
                 for name, r in sources.items()
             },
             "breakdown": [],
+            "whois_context": {
+                "has_data":       whois_result.get("has_data", False),
+                "score_modifier": 0,
+                "verdict":        whois_result.get("verdict", "no_data"),
+                "confidence":     whois_result.get("confidence"),
+                "breakdown":      whois_result.get("breakdown", []),
+            },
         }
 
     reliability = config.get("source_reliability", {})
@@ -783,10 +931,18 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
         final_verdict = score_to_verdict(final_score)
 
     elif mode == "average":
-        final_score = sum(
-            r["score"] * reliability.get(name, 1.0)
-            for name, r in active.items()
-        ) / len(active)
+        avg_active = {
+            name: r for name, r in active.items()
+            if not (r.get("gated") and r["score"] == 0)
+        }
+        if avg_active:
+            weight_sum = sum(reliability.get(name, 1.0) for name in avg_active)
+            final_score = sum(
+                r["score"] * reliability.get(name, 1.0)
+                for name, r in avg_active.items()
+            ) / weight_sum
+        else:
+            final_score = 0
         final_verdict = score_to_verdict(final_score)
 
     elif mode == "weighted":
@@ -807,12 +963,32 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
         )
         final_verdict = score_to_verdict(final_score)
 
-    # Cap verdict at medium_risk for trusted CDN/cloud ASNs — shared infrastructure
+    # WHOIS modifier — domain metadata, not threat intel
+    # Strengthens existing suspicion but cannot create it from nothing.
+    # Cap depends on base score:
+    #   final_score <= 0  → +0  (no real signal, WHOIS contributes nothing)
+    #   final_score < 4   → max +1  (weak signal, WHOIS nudges slightly)
+    #   final_score >= 4  → max +2  (real signal exists, WHOIS can reinforce)
+    whois_modifier = 0
+    if whois and whois_result.get("has_data"):
+        if final_score <= 0:
+            whois_modifier = 0
+        elif final_score < 4:
+            whois_modifier = min(whois_result["score"], 1)
+        else:
+            whois_modifier = min(whois_result["score"], 2)
+        final_score += whois_modifier
+
+    # Recompute verdict after modifier
+    final_verdict = score_to_verdict(final_score)
+
+    # Cap verdict at medium_risk for CDN ASNs — shared infrastructure that
     # legitimately looks suspicious on port and hostname signals alone.
+    # Cloud hosting ASNs (AWS/Azure/GCP) are NOT capped — rented VMs can be genuinely malicious.
     shodan_asn = ""
     if shodan and isinstance(shodan, dict):
         shodan_asn = (shodan.get("asn") or "").strip().upper()
-    if shodan_asn in config.get("trusted_asns", {}):
+    if shodan_asn in config.get("cdn_asns", {}):
         if VERDICT_ORDER.get(final_verdict, 0) > VERDICT_ORDER["medium_risk"]:
             final_verdict = "medium_risk"
 
@@ -880,6 +1056,10 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
             full_breakdown.append(f"── {name} ──")
             full_breakdown.extend(r["breakdown"])
 
+    if whois_result.get("has_data") and whois_result.get("breakdown"):
+        full_breakdown.append(f"── WHOIS ──")
+        full_breakdown.extend(whois_result["breakdown"])
+
     raw_total     = sum(r["score"] for r in active.values())
     display_score = round(raw_total / len(active), 1) if active else 0
     contribution  = {}
@@ -919,4 +1099,11 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
             for name, r in sources.items()
         },
         "breakdown": full_breakdown,
+        "whois_context": {
+            "has_data":       whois_result.get("has_data", False),
+            "score_modifier": whois_modifier,
+            "verdict":        whois_result.get("verdict", "no_data"),
+            "confidence":     whois_result.get("confidence"),
+            "breakdown":      whois_result.get("breakdown", []),
+        },
     }
