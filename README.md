@@ -37,7 +37,6 @@ python main.py
 | MD5 / SHA1 / SHA256 hash | Check against VT and OTX |
 | `verbose` | Switch to full breakdown view |
 | `brief` | Switch to summary view (default) |
-| `mode [weighted\|worst_case\|average]` | Show or change verdict mode |
 | `history` | List all past lookups |
 | `history <n>` | Replay report for entry #n |
 | `history clear` | Delete all history (prompts for confirmation) |
@@ -76,8 +75,6 @@ The displayed **avg score** is the mean of all active sources' individual scores
 
 Recency scoring only applies when there are active malicious detections **and** the detections clear a minimum threshold (`malicious ≥ 2`, or `tier1_hits ≥ 1`, or `tier2_hits ≥ 2`). Weak single-engine hits do not earn a recency bonus.
 
-Confidence is tier-aware: 2+ Tier-1 hits → high; 1 Tier-1 or 2+ Tier-2 hits → medium.
-
 ### AlienVault OTX
 
 Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, etc.) are filtered before scoring.
@@ -91,8 +88,6 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 | Named adversary (known APT / other) | +4 / +2 (cap +4) |
 | Named malware family | +2 (cap +4) |
 | Passive DNS last seen ≤30 days | +1 |
-
-Confidence is quality-driven: adversary/family attribution → high; tag matches → medium; any pulses → low.
 
 ### AbuseIPDB (IPs only)
 
@@ -151,45 +146,11 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 
 ---
 
-## Verdict modes
-
-Configured via `default_verdict_mode` in `config.json`:
-
-| Mode | Behavior |
-|------|----------|
-| `weighted` | Blends verdicts using fixed weights (VT 40%, OTX 25%, AbuseIPDB 15%, Shodan 20%), scaled by source reliability, renormalized for active sources |
-| `worst_case` | Highest verdict across active sources — most conservative |
-| `average` **(default)** | Averages raw scores scaled by source reliability, then maps to a verdict |
-
-**Source reliability** scales each source's contribution before blending:
-
-| Source | Reliability |
-|--------|------------|
-| VirusTotal | 1.0 |
-| OTX | 0.8 |
-| Shodan | 0.7 |
-| AbuseIPDB | 0.6 |
-
----
-
-## Confidence
-
-The displayed **Confidence** value is blended: it reconciles per-source detection quality against cross-source corroboration. A single high-signal source with weak consensus resolves to low/medium rather than high.
-
-**Proximity-based consensus:** a source corroborates if its verdict is within one step of the final verdict (e.g. Medium supports a High final verdict).
-
-**Override rule** (applied after mode calculation):
-- **High-confidence floor** — if any source independently returns High with high or medium confidence, the final verdict is raised to at least Medium risk. This prevents a strong single-source signal from being averaged away by sources with no data.
-
-CDN suppression happens inside `score_shodan()` at the feature level — the combined verdict is not capped for CDN ASNs. APT attribution scores +4 in `score_otx()` and flows through normal averaging — there is no separate escalation rule at the verdict level.
-
----
-
 ## Project structure
 
 | File | Responsibility |
 |------|----------------|
-| [main.py](main.py) | Input loop, history/mode commands, brief and verbose report display |
+| [main.py](main.py) | Input loop, history commands, brief and verbose report display |
 | [detect.py](detect.py) | Detects whether input is an IP, domain, or hash |
 | [sources/vt.py](sources/vt.py) | VirusTotal lookups + rescan requests |
 | [sources/otx.py](sources/otx.py) | AlienVault OTX lookups + passive DNS |
@@ -199,7 +160,7 @@ CDN suppression happens inside `score_shodan()` at the feature level — the com
 | [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic |
 | [output.py](output.py) | History (save, list, retrieve, clear) |
 | [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), 7-day TTL |
-| [config.json](config.json) | Vendor tiers, tag weights, suspicious ports/products, trusted ASNs, APT actors, source reliability, verdict mode |
+| [config.json](config.json) | Vendor tiers, tag weights, suspicious ports/products, trusted ASNs, APT actors |
 
 ---
 

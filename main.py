@@ -6,9 +6,9 @@ from sources.otx import otx_check
 from sources.shodan import shodan_check
 from sources.abuseipdb import abuseipdb_check
 from sources.whois import whois_check
-from sources.scoring import combined_verdict, load_config, resolve_vendor
+from sources.scoring import combined_verdict, load_config, resolve_vendor, VERDICT_DISPLAY
 from cache import clear_cache, clear_indicator_cache
-from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator
+from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator, get_last_result, compare_results
 
 
 config = load_config("config.json")
@@ -72,7 +72,7 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
                          not abuse.get('is_tor', False)):
             abuse_summary = "no data"
         else:
-            abuse_summary = f"{abuse['total_reports']} reports, {abuse['distinct_users']} users — confidence {abuse['abuse_score']}%"
+            abuse_summary = f"{abuse['total_reports']} reports, {abuse['distinct_users']} users"
         print(f"  [AbuseIPDB]     {abuse_summary}")
 
         # Shodan summary line
@@ -100,14 +100,12 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
             print(f"  [WHOIS]         no data")
 
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}")
-        print(f"  Confidence     : {verdict_result['blended_confidence']}")
         print(f"  Recommendation : {verdict_result['recommendation']}")
         print(f"  Triggered by   : {', '.join(verdict_result['triggered_by'])}")
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
-        print(f"  Mode           : {verdict_result['mode']}")
         print(f"{'='*45}\n")
 
     else:
@@ -275,7 +273,7 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
 
         print(f"\n  Per Source:")
         for name, s in verdict_result['per_source'].items():
-            print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
+            print(f"    {name:<12}: {s['verdict_display']}  (evidence: {s['evidence_count']})")
 
         print(f"\n  Score Breakdown:")
         for line in verdict_result["breakdown"]:
@@ -289,13 +287,11 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (avg score: {verdict_result['score']})")
         print(f"  Recommendation : {verdict_result['recommendation']}")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
-        print(f"  Confidence     : {verdict_result['blended_confidence']}")
         print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
         print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
-        print(f"  Mode           : {verdict_result['mode']}")
         if verdict_result['inactive_sources']:
             print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
         print(f"{'='*45}\n")
@@ -303,13 +299,34 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
     return verdict_result
 
 
-def check_indicator(indicator):
+def _print_changes(changes, since_ts):
+    if not changes:
+        print(f"  ✓  No changes since last scan ({since_ts})\n")
+        return
+    print(f"\n  ⚠️  Changes since last scan ({since_ts}):")
+    if "verdict" in changes:
+        old_v = VERDICT_DISPLAY.get(changes["verdict"]["from"], changes["verdict"]["from"] or "no data")
+        new_v = VERDICT_DISPLAY.get(changes["verdict"]["to"],   changes["verdict"]["to"]   or "no data")
+        print(f"    Verdict  : {old_v} → {new_v}")
+    if "score" in changes:
+        print(f"    Score    : {changes['score']['from']} → {changes['score']['to']}")
+    if "sources" in changes:
+        for src, chg in changes["sources"].items():
+            old_v = VERDICT_DISPLAY.get(chg["from"], chg["from"] or "no data")
+            new_v = VERDICT_DISPLAY.get(chg["to"],   chg["to"]   or "no data")
+            print(f"    {src:<12}: {old_v} → {new_v}")
+    print()
+
+
+def check_indicator(indicator, previous=None):
 
     ind_type = detect_type(indicator)
 
     if ind_type is None:
         print("Invalid indicator. Enter a valid IPv4, domain, or hash.")
         return
+
+    old_entry = previous if previous is not None else get_last_result(indicator)
 
     vt     = vt_check(indicator, ind_type)
     otx    = otx_check(indicator, ind_type)
@@ -318,7 +335,16 @@ def check_indicator(indicator):
     whois  = whois_check(indicator, ind_type)
 
     verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois)
-    save_results(indicator, vt, otx, abuse, shodan, verdict_result["final_verdict"], whois)
+    save_results(indicator, vt, otx, abuse, shodan, verdict_result["final_verdict"], whois,
+                 score=verdict_result["score"], per_source=verdict_result["per_source"])
+
+    if old_entry is not None:
+        new_cmp = {
+            "verdict":    verdict_result["final_verdict"],
+            "score":      verdict_result["score"],
+            "per_source": verdict_result["per_source"],
+        }
+        _print_changes(compare_results(old_entry, new_cmp), old_entry["timestamp"])
 
 
 # Main loop
@@ -346,11 +372,6 @@ while True:
 
   verbose              Show full breakdown
   brief                Show summary only
-
-  mode                 Show current verdict mode
-  mode weighted        Balanced 
-  mode worst_case      Most conservative
-  mode average         Smoothest output (default)
 
   reset cache          Clear cached API results
   rescan <indicator>   Delete one IOC from history and cache, then rescan it
@@ -415,22 +436,12 @@ while True:
         if confirm != "yes":
             print("  Cancelled.")
             continue
+        old_entry       = get_last_result(target)
         cache_deleted   = clear_indicator_cache(target)
         history_deleted = clear_indicator(target)
         print(f"  Cleared {cache_deleted} cache entries and {history_deleted} history entries for {target}")
         print(f"  Rescanning {target}...")
-        check_indicator(target)
-        continue
-
-    if parts and parts[0].lower() == "mode":
-        valid_modes = ("weighted", "worst_case", "average")
-        if len(parts) == 2 and parts[1].lower() in valid_modes:
-            config["default_mode"] = parts[1].lower()
-            print(f"  Mode set to: {config['default_mode']}")
-        else:
-            print(f"  Current mode : {config['default_mode']}")
-            print(f"  Available    : {', '.join(valid_modes)}")
-            print(f"  Usage        : mode <weighted|worst_case|average>")
+        check_indicator(target, previous=old_entry)
         continue
 
     check_indicator(indicator)

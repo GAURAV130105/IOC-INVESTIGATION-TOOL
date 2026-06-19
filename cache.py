@@ -33,7 +33,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def cache_get(ioc, source, max_age_days=7):
+def cache_get(ioc, source):
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -49,11 +49,6 @@ def cache_get(ioc, source, max_age_days=7):
 
     cached_at = datetime.datetime.fromisoformat(row[1])
     age_days  = (datetime.datetime.now() - cached_at).days
-
-    if age_days > max_age_days:
-        print(f"  [CACHE] {source} result is {age_days} days old, refreshing...")
-        return None
-
     print(f"  [CACHE HIT] {source} — cached {age_days} day(s) ago")
     return json.loads(row[0])
 

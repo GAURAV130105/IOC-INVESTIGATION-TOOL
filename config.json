@@ -226,7 +226,6 @@
     "Akira", "Cl0p", "Medusa"
   ],
 
-  "default_verdict_mode": "average",
   "suspicious_ports": {
     "4444":  {"weight": 2, "reason": "Metasploit default listener"},
     "1337":  {"weight": 2, "reason": "common C2 port"},
@@ -286,13 +285,6 @@
     "AS16509": "Amazon AWS",
     "AS8075":  "Microsoft Azure",
     "AS15169": "Google Cloud"
-},
-
-"source_reliability": {
-    "VirusTotal":  1.0,
-    "OTX":         0.8,
-    "AbuseIPDB":   0.6,
-    "Shodan":      0.7
 },
 
 "abuseipdb_attack_weights": {

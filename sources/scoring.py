@@ -46,14 +46,12 @@ def load_config(path="config.json"):
         "scoring":      scoring,
         "tag_weights":  tag_weights,
         "tag_cap":      tag_cap,
-        "default_mode": config.get("default_verdict_mode", "worst_case"),
         "apt_actors":   {a.lower() for a in config.get("apt_actors", [])},
         "suspicious_ports":    suspicious_ports,
         "suspicious_products": suspicious_products,
         "shodan_tags":         shodan_tags,
         "cdn_asns":            cdn_asns,
         "cloud_hosting_asns":  cloud_hosting_asns,
-        "source_reliability":       config.get("source_reliability", {}),
         "vt_file_tags":             vt_file_tags,
         "abuseipdb_attack_weights": config.get("abuseipdb_attack_weights", {}),
     }
@@ -61,9 +59,6 @@ def load_config(path="config.json"):
 
 def resolve_vendor(raw_name, alias_lookup):
     return alias_lookup.get(raw_name.lower(), raw_name.lower())
-
-# Used to pick the strongest confidence/verdict when comparing across sources
-CONFIDENCE_ORDER = {None: 0, "low": 1, "medium": 2, "high": 3}
 
 VERDICT_ORDER = {None: 0, "no_data": 0, "clean": 1, "suspicious": 2, "low_risk": 3, "medium_risk": 4, "high": 5}
 
@@ -118,7 +113,7 @@ def score_vt(vt, config):
     """
 
     if not vt:
-        return {"verdict": "no_data", "confidence": None, "score": 0,
+        return {"verdict": "no_data", "score": 0,
                 "evidence_count": 0, "has_data": False, "breakdown": []}
 
     score        = 0
@@ -240,30 +235,12 @@ def score_vt(vt, config):
         undetected > 0
     )
 
-    if tier1_hits >= 2:
-        confidence = "high"
-    elif tier1_hits >= 1 or tier2_hits >= 2:
-        confidence = "medium"
-    elif malicious >= 15:
-        confidence = "high"
-    elif malicious >= 10:
-        confidence = "medium"
-    elif malicious >= 1:
-        confidence = "low"
-    elif harmless >= 10:
-        confidence = "high"
-    elif harmless >= 1:
-        confidence = "medium"
-    else:
-        confidence = None
-
     score = min(score, 15)
 
     verdict = score_to_verdict(score) if has_data else "no_data"
 
     return {
         "verdict":        verdict,
-        "confidence":     confidence,
         "score":          score,
         "evidence_count": malicious,
         "has_data":       has_data,
@@ -285,7 +262,7 @@ def score_otx(otx, config=None):
     """
 
     if not otx:
-        return {"verdict": "no_data", "confidence": None, "score": 0,
+        return {"verdict": "no_data", "score": 0,
                 "evidence_count": 0, "has_data": False, "breakdown": []}
 
     score     = 0
@@ -431,20 +408,10 @@ def score_otx(otx, config=None):
     # reputation is 0 for unknown IPs, negative means OTX community flagged it
     has_data = pulse_count > 0 or reputation < 0
 
-    if adversary_score > 0 or family_score > 0:
-        confidence = "high"
-    elif pulse_tag_score > 0:
-        confidence = "medium"
-    elif pulse_count > 0:
-        confidence = "low"
-    else:
-        confidence = None
-
     verdict = score_to_verdict(score) if has_data else "no_data"
 
     return {
         "verdict":        verdict,
-        "confidence":     confidence,
         "score":          score,
         "evidence_count": pulse_count,
         "has_data":       has_data,
@@ -466,7 +433,7 @@ def score_abuse(abuse, config=None, asn=None):
     """
 
     if not abuse:
-        return {"verdict": "no_data", "confidence": None, "score": 0,
+        return {"verdict": "no_data", "score": 0,
                 "evidence_count": 0, "has_data": False, "breakdown": []}
 
     score          = 0
@@ -573,21 +540,11 @@ def score_abuse(abuse, config=None, asn=None):
 
     has_data = distinct_users > 0 or is_tor
 
-    if distinct_users >= 20:
-        confidence = "high"
-    elif distinct_users >= 5:
-        confidence = "medium"
-    elif distinct_users >= 2:
-        confidence = "low"
-    else:
-        confidence = None
-
     score = min(score, 15)
     verdict = score_to_verdict(score) if has_data else "no_data"
 
     return {
         "verdict":        verdict,
-        "confidence":     confidence,
         "score":          score,
         "evidence_count": distinct_users,
         "has_data":       has_data,
@@ -611,7 +568,7 @@ def score_shodan(shodan, config=None):
     """
 
     if not shodan:
-        return {"verdict": "no_data", "confidence": None, "score": 0,
+        return {"verdict": "no_data", "score": 0,
                 "evidence_count": 0, "has_data": False, "breakdown": []}
 
     score     = 0
@@ -743,15 +700,6 @@ def score_shodan(shodan, config=None):
         len(shodan.get("ports", [])) > 0
     )
 
-    if len(vulns) >= 3 or len(flagged_products) > 0:
-        confidence = "high"
-    elif len(vulns) >= 1 or len(flagged_ports) > 0 or len(flagged_tags) > 0:
-        confidence = "medium"
-    elif has_data:
-        confidence = "low"
-    else:
-        confidence = None
-
     score = min(score, 15)
 
     # Minimum evidence threshold: open ports and missing hostname alone cannot raise the verdict
@@ -766,7 +714,6 @@ def score_shodan(shodan, config=None):
 
     return {
         "verdict":        verdict,
-        "confidence":     confidence,
         "score":          score,
         "evidence_count": len(vulns) + len(flagged_ports) + len(flagged_products),
         "has_data":       has_data,
@@ -777,7 +724,7 @@ def score_shodan(shodan, config=None):
     
 def score_whois(whois, config=None):
     if not whois:
-        return {"verdict": "no_data", "confidence": None, "score": 0,
+        return {"verdict": "no_data", "score": 0,
                 "evidence_count": 0, "has_data": False, "breakdown": []}
 
     score        = 0
@@ -823,14 +770,6 @@ def score_whois(whois, config=None):
     # Cap at 7 — WHOIS is a supporting signal not primary evidence
     score = min(score, 7)
 
-    # Confidence reflects data quality not suspiciousness
-    if creation is None:
-        confidence = "low"
-    elif age_days is not None and age_days < 30:
-        confidence = "high"
-    else:
-        confidence = "medium"
-
     has_data = creation is not None or registrar is not None
 
     # Cap verdict at medium_risk — WHOIS alone should never produce High risk
@@ -840,7 +779,6 @@ def score_whois(whois, config=None):
 
     return {
         "verdict":        verdict,
-        "confidence":     confidence,
         "score":          score,
         "evidence_count": 1 if has_data else 0,
         "has_data":       has_data,
@@ -848,28 +786,16 @@ def score_whois(whois, config=None):
     }
 
 
-def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mode=None, config=None):
-    """Combine per-source scores into a single final verdict.
+def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, config=None):
+    """Combine per-source scores into a single final verdict using a plain average.
 
-    Three aggregation modes:
-      worst_case  — takes the highest verdict across all active sources
-      average     — weighted average of raw scores using source_reliability weights
-      weighted    — blends verdicts using fixed source weights, normalized to active sources
-
-    One override rule applies after aggregation:
-      High-confidence floor — if any source independently returns High with medium or high
-      confidence, the final verdict is raised to at least Medium risk. This prevents a strong
-      single-source signal from being averaged away by sources with no data.
-
-    CDN suppression happens at the Shodan scoring level only — not at the verdict level.
-    APT attribution scores +4 in OTX and flows through normal averaging.
+    Gated sources (CDN/cloud ASNs with score==0) are excluded from the average.
+    One override rule applies: if any source returns High, the final verdict is raised
+    to at least Medium risk.
     """
 
     if config is None:
         config = load_config()
-
-    if mode is None:
-        mode = config.get("default_mode", "worst_case")
 
     vt_result    = score_vt(vt, config)
     otx_result   = score_otx(otx, config=config)
@@ -891,11 +817,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
         return {
             "final_verdict":         "no_data",
             "final_verdict_display": VERDICT_DISPLAY["no_data"],
-            "confidence":            None,
-            "system_confidence":     None,
-            "blended_confidence":    None,
             "triggered_by":          [],
-            "mode":                  mode,
             "score":                 0,
             "corroboration_count":   0,
             "consensus_ratio":       "Weak (0/0)",
@@ -907,7 +829,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
                 name: {
                     "verdict":         r["verdict"],
                     "verdict_display": VERDICT_DISPLAY.get(r["verdict"], r["verdict"]),
-                    "confidence":      r["confidence"],
                     "score":           r["score"],
                     "evidence_count":  r["evidence_count"],
                     "has_data":        r["has_data"],
@@ -919,52 +840,19 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
                 "has_data":       whois_result.get("has_data", False),
                 "score_modifier": 0,
                 "verdict":        whois_result.get("verdict", "no_data"),
-                "confidence":     whois_result.get("confidence"),
                 "breakdown":      whois_result.get("breakdown", []),
             },
         }
 
-    reliability = config.get("source_reliability", {})
-
-    if mode == "worst_case":
-        final_score = max(
-            r["score"] * reliability.get(name, 1.0)
-            for name, r in active.items()
-        )
-        final_verdict = score_to_verdict(final_score)
-
-    elif mode == "average":
-        avg_active = {
-            name: r for name, r in active.items()
-            if not (r.get("gated") and r["score"] == 0)
-        }
-        if avg_active:
-            weight_sum = sum(reliability.get(name, 1.0) for name in avg_active)
-            final_score = sum(
-                r["score"] * reliability.get(name, 1.0)
-                for name, r in avg_active.items()
-            ) / weight_sum
-        else:
-            final_score = 0
-        final_verdict = score_to_verdict(final_score)
-
-    elif mode == "weighted":
-        base_weights = {"VirusTotal": 0.4, "OTX": 0.25, "AbuseIPDB": 0.15, "Shodan": 0.2}
-        active_weights     = {name: base_weights.get(name, 0.1) for name in active}
-        total_weight       = sum(active_weights.values())
-        normalized_weights = {name: w / total_weight for name, w in active_weights.items()}
-        final_score = sum(
-            r["score"] * reliability.get(name, 1.0) * normalized_weights[name]
-            for name, r in active.items()
-        )
-        final_verdict = score_to_verdict(final_score)
-
+    avg_active = {
+        name: r for name, r in active.items()
+        if not (r.get("gated") and r["score"] == 0)
+    }
+    if avg_active:
+        final_score = sum(r["score"] for r in avg_active.values()) / len(avg_active)
     else:
-        final_score = max(
-            r["score"] * reliability.get(name, 1.0)
-            for name, r in active.items()
-        )
-        final_verdict = score_to_verdict(final_score)
+        final_score = 0
+    final_verdict = score_to_verdict(final_score)
 
     # WHOIS modifier — domain metadata, not threat intel
     # Strengthens existing suspicion but cannot create it from nothing.
@@ -986,7 +874,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
     final_verdict = score_to_verdict(final_score)
 
     for name, r in active.items():
-        if r["verdict"] == "high" and r["confidence"] in ("high", "medium"):
+        if r["verdict"] == "high":
             if VERDICT_ORDER.get(final_verdict, 0) < VERDICT_ORDER["medium_risk"]:
                 final_verdict = "medium_risk"
                 break
@@ -997,35 +885,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
     ]
     corroboration_count = len(triggered_by)
     active_count        = len(active)
-
-    # Source confidence: strongest confidence among individual sources
-    single_source_confidences = [r["confidence"] for r in active.values() if r["confidence"]]
-    if single_source_confidences:
-        source_confidence = max(single_source_confidences, key=lambda c: CONFIDENCE_ORDER[c])
-    else:
-        source_confidence = "low"
-
-    # System confidence: derived from cross-source corroboration count
-    if active_count >= 3 and corroboration_count >= 3:
-        system_confidence = "high"
-    elif active_count >= 2 and corroboration_count >= 2:
-        system_confidence = "medium"
-    else:
-        system_confidence = "low"
-
-    # Blended confidence: resolves contradictions between a single high-signal source
-    # and weak cross-source consensus so the display doesn't mislead analysts.
-    if system_confidence == "low" and corroboration_count == 1:
-        blended_confidence = "low"
-    elif source_confidence == "high" and system_confidence == "medium":
-        blended_confidence = "medium"
-    elif source_confidence == "high" and system_confidence == "high":
-        blended_confidence = "high"
-    else:
-        blended_confidence = min(
-            source_confidence or "low", system_confidence,
-            key=lambda c: CONFIDENCE_ORDER.get(c, 1),
-        )
 
     ratio_str    = f"{corroboration_count}/{active_count}"
     if active_count == 1:
@@ -1062,11 +921,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
     return {
         "final_verdict":         final_verdict,
         "final_verdict_display": VERDICT_DISPLAY.get(final_verdict, final_verdict),
-        "confidence":            source_confidence,
-        "system_confidence":     system_confidence,
-        "blended_confidence":    blended_confidence,
         "triggered_by":          triggered_by,
-        "mode":                  mode,
         "score":                 display_score,
         "corroboration_count":   corroboration_count,
         "consensus_ratio":       consensus_ratio,
@@ -1078,7 +933,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
             name: {
                 "verdict":         r["verdict"],
                 "verdict_display": VERDICT_DISPLAY.get(r["verdict"], r["verdict"]),
-                "confidence":      r["confidence"],
                 "score":           r["score"],
                 "evidence_count":  r["evidence_count"],
                 "has_data":        r["has_data"],
@@ -1090,7 +944,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
             "has_data":       whois_result.get("has_data", False),
             "score_modifier": whois_modifier,
             "verdict":        whois_result.get("verdict", "no_data"),
-            "confidence":     whois_result.get("confidence"),
             "breakdown":      whois_result.get("breakdown", []),
         },
     }
