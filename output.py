@@ -1,9 +1,12 @@
 import sqlite3
 import json
 import datetime
+import csv
 
 from cache import DB_PATH
+from detect import detect_type
 from sources.scoring import VERDICT_DISPLAY
+
 
 def print_history():
     init_history_table()
@@ -31,6 +34,7 @@ def print_history():
 
     print(f"  {'─'*45}\n")
 
+
 def init_history_table():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -53,6 +57,7 @@ def init_history_table():
         except sqlite3.OperationalError:
             pass
     conn.close()
+
 
 def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result=None, score=None, per_source=None):
     init_history_table()
@@ -90,6 +95,7 @@ def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, 
 
     print(f"  Result saved to database ({total} total)")
 
+
 def get_history_count():
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
@@ -97,12 +103,14 @@ def get_history_count():
     conn.close()
     return total
 
+
 def clear_history():
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM history")
     conn.commit()
     conn.close()
+
 
 def clear_indicator(indicator):
     init_history_table()
@@ -113,6 +121,7 @@ def clear_indicator(indicator):
     conn.commit()
     conn.close()
     return deleted
+
 
 def get_last_result(indicator):
     """Return the most recent history record for an indicator, or None."""
@@ -134,14 +143,14 @@ def get_last_result(indicator):
     return {
         "timestamp":  timestamp,
         "indicator":  ind,
-        "vt":         json.loads(vt_json)          if vt_json          else None,
-        "otx":        json.loads(otx_json)         if otx_json         else None,
-        "abuse":      json.loads(abuse_json)        if abuse_json        else None,
-        "shodan":     json.loads(shodan_json)       if shodan_json       else None,
-        "whois":      json.loads(whois_json)        if whois_json        else None,
+        "vt":         json.loads(vt_json) if vt_json else None,
+        "otx":        json.loads(otx_json) if otx_json else None,
+        "abuse":      json.loads(abuse_json) if abuse_json else None,
+        "shodan":     json.loads(shodan_json) if shodan_json else None,
+        "whois":      json.loads(whois_json) if whois_json else None,
         "verdict":    verdict,
         "score":      score,
-        "per_source": json.loads(per_source_json)  if per_source_json   else {},
+        "per_source": json.loads(per_source_json) if per_source_json else {},
     }
 
 
@@ -177,6 +186,55 @@ def compare_results(old, new):
     return changes
 
 
+def export_csv(output_path="results.csv"):
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT timestamp, indicator, vt_result, otx_result, verdict, score
+        FROM history
+        ORDER BY id DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "timestamp",
+            "indicator",
+            "ioc_type",
+            "vt_malicious",
+            "vt_suspicious",
+            "otx_pulses",
+            "verdict",
+            "score",
+        ])
+        writer.writeheader()
+
+        for timestamp, indicator, vt_json, otx_json, verdict, score in rows:
+            vt_data = json.loads(vt_json) if vt_json else {}
+            otx_data = json.loads(otx_json) if otx_json else {}
+
+            ioc_type = detect_type(indicator) or ""
+            vt_malicious = vt_data.get("malicious", "")
+            vt_suspicious = vt_data.get("suspicious", "")
+            otx_pulses = otx_data.get("pulse_count", "")
+
+            writer.writerow({
+                "timestamp": timestamp,
+                "indicator": indicator,
+                "ioc_type": ioc_type,
+                "vt_malicious": vt_malicious,
+                "vt_suspicious": vt_suspicious,
+                "otx_pulses": otx_pulses,
+                "verdict": verdict,
+                "score": score,
+            })
+
+    print(f"Exported history to {output_path}")
+
+
 def get_history_entry(n):
     """Return the nth history entry (1-indexed, newest first), or None if out of range."""
     init_history_table()
@@ -196,10 +254,10 @@ def get_history_entry(n):
     return {
         "timestamp": timestamp,
         "indicator": indicator,
-        "vt":        json.loads(vt_json)    if vt_json    else None,
-        "otx":       json.loads(otx_json)   if otx_json   else None,
-        "abuse":     json.loads(abuse_json)  if abuse_json  else None,
+        "vt":        json.loads(vt_json) if vt_json else None,
+        "otx":       json.loads(otx_json) if otx_json else None,
+        "abuse":     json.loads(abuse_json) if abuse_json else None,
         "shodan":    json.loads(shodan_json) if shodan_json else None,
-        "whois":     json.loads(whois_json)  if whois_json  else None,
+        "whois":     json.loads(whois_json) if whois_json else None,
         "verdict":   verdict,
     }
