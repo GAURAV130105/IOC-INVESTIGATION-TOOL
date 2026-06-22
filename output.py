@@ -213,9 +213,10 @@ def export_csv(output_path="results.csv"):
         writer.writeheader()
 
         for timestamp, indicator, vt_json, otx_json, verdict, score in rows:
-            vt_data = json.loads(vt_json) if vt_json else {}
-            otx_data = json.loads(otx_json) if otx_json else {}
-
+            vt_data = json.loads(vt_json) if vt_json else None
+            otx_data = json.loads(otx_json) if otx_json else None
+            vt_data = vt_data if isinstance(vt_data, dict) else {}
+            otx_data = otx_data if isinstance(otx_data, dict) else {}
             ioc_type = detect_type(indicator) or ""
             vt_malicious = vt_data.get("malicious", "")
             vt_suspicious = vt_data.get("suspicious", "")
